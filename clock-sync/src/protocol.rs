@@ -1,5 +1,5 @@
 //! Wire format for clock-sync datagrams: fixed 18-byte layout,
-//! `[version: u8][msg_type: u8][round: u64 LE][lateness_ns: i64 LE]`.
+//! `[version: u8][msg_type: u8][value: u64 LE][detail: i64 LE]`.
 //! Sender identity comes from the authenticated QUIC connection, not the
 //! payload.
 
@@ -12,7 +12,6 @@ pub const WIRE_VERSION: u8 = 1;
 pub const MESSAGE_SIZE: usize = 18;
 
 const MSG_TYPE_PULSE: u8 = 0;
-/// Reserved for the Phase 2 coarse loop.
 const MSG_TYPE_PANIC: u8 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,6 +24,11 @@ pub enum Message {
         /// estimate.
         lateness_ns: i64,
     },
+    /// Broadcast while the fine loop cannot find a synchronized quorum.
+    Panic {
+        /// Coarse wall-clock bucket used to reject replayed recovery signals.
+        bucket: u64,
+    },
 }
 
 pub fn encode_pulse(round: u64, lateness_ns: i64) -> Bytes {
@@ -36,7 +40,15 @@ pub fn encode_pulse(round: u64, lateness_ns: i64) -> Bytes {
     Bytes::copy_from_slice(&buf)
 }
 
-/// `None` for anything malformed, unknown-typed, or reserved.
+pub fn encode_panic(bucket: u64) -> Bytes {
+    let mut buf = [0u8; MESSAGE_SIZE];
+    buf[0] = WIRE_VERSION;
+    buf[1] = MSG_TYPE_PANIC;
+    buf[2..10].copy_from_slice(&bucket.to_le_bytes());
+    Bytes::copy_from_slice(&buf)
+}
+
+/// `None` for anything malformed or unknown-typed.
 pub fn decode(bytes: &[u8]) -> Option<Message> {
     let buf: &[u8; MESSAGE_SIZE] = bytes.try_into().ok()?;
     if buf[0] != WIRE_VERSION {
@@ -47,7 +59,10 @@ pub fn decode(bytes: &[u8]) -> Option<Message> {
             round: u64::from_le_bytes(buf[2..10].try_into().expect("fixed slice")),
             lateness_ns: i64::from_le_bytes(buf[10..18].try_into().expect("fixed slice")),
         }),
-        MSG_TYPE_PANIC => None, // phase 2
+        MSG_TYPE_PANIC if buf[10..18] == [0; 8] => Some(Message::Panic {
+            bucket: u64::from_le_bytes(buf[2..10].try_into().expect("fixed slice")),
+        }),
+        MSG_TYPE_PANIC => None,
         _ => None,
     }
 }
@@ -72,6 +87,15 @@ mod tests {
     }
 
     #[test]
+    fn panic_round_trip() {
+        for bucket in [0, 42, u64::MAX] {
+            let bytes = encode_panic(bucket);
+            assert_eq!(bytes.len(), MESSAGE_SIZE);
+            assert_eq!(decode(&bytes), Some(Message::Panic { bucket }));
+        }
+    }
+
+    #[test]
     fn rejects_malformed() {
         assert_eq!(decode(&[]), None);
         assert_eq!(decode(&[WIRE_VERSION; MESSAGE_SIZE + 1]), None);
@@ -83,9 +107,9 @@ mod tests {
         bad_version[0] = 99;
         assert_eq!(decode(&bad_version), None);
 
-        let mut panic_msg = good.to_vec();
-        panic_msg[1] = MSG_TYPE_PANIC;
-        assert_eq!(decode(&panic_msg), None);
+        let mut malformed_panic = encode_panic(7).to_vec();
+        malformed_panic[10] = 1;
+        assert_eq!(decode(&malformed_panic), None);
 
         let mut bad_type = good.to_vec();
         bad_type[1] = 7;

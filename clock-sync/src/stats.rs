@@ -12,6 +12,12 @@ pub(crate) struct RoundStats {
     pub stale_round: u64,
     pub far_future_round: u64,
     pub duplicate_peer: u64,
+    pub panics_received: u64,
+    pub panics_sent: u64,
+    pub stale_panics: u64,
+    pub unstaked_panics: u64,
+    pub panic_amplifications: u64,
+    pub recoveries: u64,
     /// How late after the scheduled pulse time we enqueued our broadcast.
     pub send_lateness_ns: i64,
     /// Datagrams that arrived while the egress channel was full.
@@ -85,6 +91,12 @@ impl RoundStats {
             ("stale_round", self.stale_round, i64),
             ("far_future_round", self.far_future_round, i64),
             ("duplicate_peer", self.duplicate_peer, i64),
+            ("panics_received", self.panics_received, i64),
+            ("panics_sent", self.panics_sent, i64),
+            ("stale_panics", self.stale_panics, i64),
+            ("unstaked_panics", self.unstaked_panics, i64),
+            ("panic_amplifications", self.panic_amplifications, i64),
+            ("recoveries", self.recoveries, i64),
             ("egress_full", self.egress_full, i64),
         );
         *self = Self::default();

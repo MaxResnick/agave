@@ -106,6 +106,16 @@ impl WelchLynch {
     /// the next period boundary of the system's wall clock; Phase 2: the
     /// recovery consensus decision).
     pub fn new(config: Config, me: Pubkey, start_round: u64, first_next: LocalNs) -> Self {
+        Self::new_with_offset(config, me, start_round, first_next, 0)
+    }
+
+    pub fn new_with_offset(
+        config: Config,
+        me: Pubkey,
+        start_round: u64,
+        first_next: LocalNs,
+        cumulative_offset_ns: i64,
+    ) -> Self {
         assert!(
             config.window_ns > 0 && config.window_ns < config.period_ns,
             "acceptance window must lie strictly inside the pulse period"
@@ -115,7 +125,7 @@ impl WelchLynch {
             me,
             round: start_round,
             next: first_next,
-            cumulative_offset_ns: 0,
+            cumulative_offset_ns,
             buckets: BTreeMap::new(),
         }
     }
@@ -136,6 +146,13 @@ impl WelchLynch {
 
     pub fn cumulative_offset_ns(&self) -> i64 {
         self.cumulative_offset_ns
+    }
+
+    /// Restart the fine loop one period after a coordinated recovery event.
+    pub fn restart(&mut self, first_next: LocalNs) {
+        self.round = 0;
+        self.next = first_next;
+        self.buckets.clear();
     }
 
     /// Record our own pulse: a perfect estimate of zero offset.
@@ -586,6 +603,33 @@ mod tests {
             Pubkey::new_unique(),
             0,
             LocalNs::from_ns(0),
+        );
+    }
+
+    #[test]
+    fn recovery_restart_clears_round_state_and_correction() {
+        let (mut sm, peers, stakes) = cluster(&[1, 1, 1]);
+        sm.record_own_pulse();
+        pulse_with_offset(&mut sm, peers[1], 20_000_000);
+        pulse_with_offset(&mut sm, peers[2], 30_000_000);
+        sm.close_round(&stakes);
+        assert_ne!(sm.cumulative_offset_ns(), 0);
+
+        let restart_at = LocalNs::from_ns(9 * T);
+        sm.restart(restart_at);
+
+        assert_eq!(sm.round(), 0);
+        assert_eq!(sm.pulse_due_at(), restart_at);
+        let previous_offset = sm.cumulative_offset_ns();
+        assert_eq!(
+            sm.on_pulse(peers[1], 0, restart_at, 0, 0),
+            Ok(()),
+            "pre-recovery buckets must be discarded"
+        );
+        assert_eq!(
+            sm.cumulative_offset_ns(),
+            previous_offset,
+            "recovery must preserve the virtual clock value"
         );
     }
 }
