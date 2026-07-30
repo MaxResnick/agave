@@ -21,7 +21,7 @@ use {
     std::{
         collections::HashMap,
         net::SocketAddr,
-        sync::{Arc, atomic::AtomicBool},
+        sync::{Arc, Mutex, MutexGuard, atomic::AtomicBool},
         time::Duration,
     },
     tokio::{
@@ -37,11 +37,21 @@ fn test_timing() -> ServiceTiming {
         period: Duration::from_millis(100),
         window: Duration::from_millis(50),
         absorption_half_width: Duration::from_millis(5),
+        panic_interval: Duration::from_millis(20),
+        panic_observation_ttl: Duration::from_millis(80),
     }
 }
 
 /// Generous per-peer rate limit: test rounds are 10x faster than production.
 const TEST_RATE_LIMIT_PPS: usize = 100;
+
+static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+fn test_guard() -> MutexGuard<'static, ()> {
+    TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 struct Node {
     pubkey: Pubkey,
@@ -107,6 +117,19 @@ impl Node {
         }
     }
 
+    fn recovery_count(&self) -> u64 {
+        self.service
+            .as_ref()
+            .map_or(0, ClockSyncService::recovery_count)
+    }
+
+    fn broadcast_panic(&self, bucket: u64) {
+        self.endpoint
+            .egress
+            .try_send(protocol::encode_panic(bucket))
+            .expect("panic egress");
+    }
+
     fn set_peers(
         &self,
         peers: &HashMap<Pubkey, Option<SocketAddr>>,
@@ -159,6 +182,7 @@ fn make_runtime() -> Runtime {
 
 #[test]
 fn four_honest_nodes_converge() {
+    let _guard = test_guard();
     agave_logger::setup();
     let runtime = make_runtime();
     // Initial skews well inside the 50ms acceptance window.
@@ -195,6 +219,7 @@ fn four_honest_nodes_converge() {
 
 #[test]
 fn byzantine_minority_cannot_prevent_convergence() {
+    let _guard = test_guard();
     agave_logger::setup();
     let runtime = make_runtime();
     // Three honest nodes and one adversary holding just under a third of
@@ -239,6 +264,45 @@ fn byzantine_minority_cannot_prevent_convergence() {
     attack_exit.store(true, std::sync::atomic::Ordering::Relaxed);
     attacker.join().expect("attacker thread");
     adversary.shutdown(&runtime);
+    for node in nodes {
+        node.shutdown(&runtime);
+    }
+}
+
+#[test]
+fn panic_quorum_restarts_synchronized_nodes() {
+    let _guard = test_guard();
+    agave_logger::setup();
+    let runtime = make_runtime();
+    let skews_ns = [0i64, 30_000_000, -20_000_000, 10_000_000];
+    let nodes: Vec<Node> = skews_ns
+        .iter()
+        .map(|skew| Node::start(&runtime, *skew, true))
+        .collect();
+    full_mesh(&nodes, &[1, 1, 1, 1]);
+
+    std::thread::sleep(Duration::from_secs(2));
+    let before_recovery = max_pairwise_skew_ns(&nodes);
+    assert!(
+        before_recovery < 5_000_000,
+        "fine loop must converge before recovery, got {before_recovery}ns"
+    );
+
+    for node in &nodes {
+        node.broadcast_panic(7);
+    }
+    std::thread::sleep(Duration::from_secs(2));
+
+    assert!(
+        nodes.iter().all(|node| node.recovery_count() > 0),
+        "every node must cross a panic quorum"
+    );
+    let settled = max_pairwise_skew_ns(&nodes);
+    assert!(
+        settled < 10_000_000,
+        "panic recovery should keep synchronized clocks within 10ms, got {settled}ns"
+    );
+
     for node in nodes {
         node.shutdown(&runtime);
     }

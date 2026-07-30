@@ -116,6 +116,10 @@ impl SyncedClock {
         self.offset_ns.store(offset_ns, Ordering::Relaxed);
     }
 
+    pub fn offset_ns(&self) -> i64 {
+        self.offset_ns.load(Ordering::Relaxed)
+    }
+
     /// How far the synchronized clock has diverged from the system's wall
     /// clock.
     pub fn offset_vs_system_ns(&self) -> i64 {
