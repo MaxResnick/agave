@@ -37,7 +37,7 @@ Here is the entire change:
 
 That is the whole consensus change. Replay still works as it does today and validators remain free to use different hardware or internal scheduling strategies. A leader may execute transactions locally or leave all execution to replay.
 
-The block itself is not reordered: block and RPC presentation remain in the order recorded by the leader. All transactions in the `EntryBatch` are verified before any is executed.
+The sorted replay order becomes the canonical transaction order within each `EntryBatch` for both the block and its RPC representation. All transactions in the `EntryBatch` are verified before any is executed.
 
 Reordering can change which transaction sees a depleted fee payer or an advanced durable nonce. SIMDs 0192, 0290, and 0297, or equivalent transaction-level failure semantics, must therefore activate first so these cases fail the transaction rather than the entire block.
 
