@@ -34,7 +34,7 @@ Here is the entire change:
  6      replay(entry_batch.transactions)                                      // unchanged: order recorded by the leader
 ```
 
-`priority` is the same score Agave already uses to rank transactions (`calculate_priority_and_cost_v1`). Equal-priority transactions are ordered by signature ascending.
+`priority` is the same score Agave already uses to rank transactions (`calculate_priority_and_cost_v1`).
 
 The leader's scheduler is expected to construct each `EntryBatch` in this order. Replay only enforces the rule; it does not repair invalid leader output.
 
@@ -63,7 +63,3 @@ The ordering check occurs after the complete `EntryBatch` is available and befor
 2. revert protection.
 
    Transaction size is increasing (even past 4k) so that many of the benign use cases of all or nothing bundles will be possible within in a single transaction. As far as revert protection goes. The revenue equivalence theorem tells us that revenue from all pay (ordinary PGA with no revert protection) should be similar to that of a first price (rever protected) auction. The possible exception to this would be for back runs. I think it may make sense to put some kind of success/failure fee in the protocol eventually but it significantly complicates the journey to in protocol ordering. I think we should take a look at adding it after we have fully achieved in protocol ordering.
-
-## References
-
-- [Bankless leaders roadmap](https://github.com/solana-foundation/solana-improvement-documents/issues/324)
