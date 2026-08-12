@@ -1,6 +1,6 @@
-<!-- Suggested GitHub issue title: replay: Decouple transaction execution order from ledger order -->
+<!-- Suggested GitHub issue title: replay: Enforce priority ordering within each EntryBatch -->
 
-# Decouple transaction execution order from ledger order
+# Enforce priority ordering within each EntryBatch
 
 ## Summary
 
@@ -10,9 +10,9 @@ By my count, at least 13 distinct scheduler implementations are active on Solana
 
 I maintain certain tools to help searchers understand this behavior. Over the last seven months, I have found it increasingly difficult to keep these tools current with the scheduling nuances that continue to appear month after month. Even extremely sophisticated on-chain traders, who have a much more tangible incentive than I do to stay current, tell me that they are having the same problem.
 
-Scheduler experimentation has produced valuable performance work and exposed many transaction-pipeline bugs. But performance does not require giving schedulers free rein to delay, reprioritize, or otherwise manipulate user transactions.
+Scheduler experimentation has produced valuable performance work and exposed many transaction-pipeline bugs. But performance does not require leaving transaction order within each `EntryBatch` entirely to scheduler discretion.
 
-This proposal makes execution order within a completed `EntryBatch` a replay rule. Producers still control inclusion and `EntryBatch` boundaries, so this does not guarantee fair ordering. A producer should normally record transactions in priority order, but replay sorts them whether or not the producer does so and whether or not the leader executes locally.
+This proposal makes priority ordering within a completed `EntryBatch` a block validity rule. Producers still control inclusion and `EntryBatch` boundaries, so this does not guarantee fair ordering. The leader must record transactions in priority order. Replay checks that order and marks the block dead if it is violated.
 
 ## Background
 
@@ -29,17 +29,20 @@ Here is the entire change:
  2      replay(entry_batch.transactions)                                      // order recorded by the leader
 
  3  with this proposal, upon receiving a complete EntryBatch:
- 4      transactions = sort(entry_batch.transactions, by priority descending) // ordered by priority fee per CU
- 5      replay(transactions)
+ 4      if not is_sorted(entry_batch.transactions, by priority descending):
+ 5          return ProtocolViolation                                          // mark the block dead
+ 6      replay(entry_batch.transactions)                                      // unchanged: order recorded by the leader
 ```
 
-`priority` is the same score Agave already uses to rank transactions (`calculate_priority_and_cost_v1`). Equal-priority transactions have ties broken by comparing signatures.
+`priority` is the same score Agave already uses to rank transactions (`calculate_priority_and_cost_v1`). Equal-priority transactions are ordered by signature ascending.
 
-That is the whole consensus change. Replay still works as it does today and validators remain free to use different hardware or internal scheduling strategies. A leader may execute transactions locally or leave all execution to replay.
+The leader's scheduler is expected to construct each `EntryBatch` in this order. Replay only enforces the rule; it does not repair invalid leader output.
 
-The sorted replay order becomes the canonical transaction order within each `EntryBatch` for both the block and its RPC representation. All transactions in the `EntryBatch` are verified before any is executed.
+That is the whole consensus change: an out-of-order `EntryBatch`, which replay accepts today, becomes a protocol violation. Replay does not reorder transactions. It marks the block dead if the leader did not record an `EntryBatch` in canonical order; otherwise, it replays the transactions exactly as it does today.
 
-Reordering can change which transaction sees a depleted fee payer or an advanced durable nonce. SIMDs 0192, 0290, and 0297, or equivalent transaction-level failure semantics, must therefore activate first so these cases fail the transaction rather than the entire block.
+The order recorded in every valid `EntryBatch` is therefore the canonical order for the ledger, replay, and RPC. Validators remain free to use different hardware or internal scheduling strategies. A leader may execute transactions locally or leave all execution to replay, but the block it produces must be valid in canonical order.
+
+The ordering check occurs after the complete `EntryBatch` is available and before any transaction in it is executed.
 
 ## Non-goals and limitations
 
@@ -64,6 +67,3 @@ Reordering can change which transaction sees a depleted fee payer or an advanced
 ## References
 
 - [Bankless leaders roadmap](https://github.com/solana-foundation/solana-improvement-documents/issues/324)
-- [SIMD-0192: Relax transaction loading constraints](https://github.com/solana-foundation/solana-improvement-documents/pull/192)
-- [SIMD-0290: Relax fee-payer constraints](https://github.com/solana-foundation/solana-improvement-documents/pull/290)
-- [SIMD-0297: Relax durable-nonce constraints](https://github.com/solana-foundation/solana-improvement-documents/pull/297)
